@@ -17,6 +17,8 @@ import Text.Megaparsec
     , errorBundlePretty
     , parse
     , some
+    , try
+    , optional
     , (<|>)
     )
 import Text.Megaparsec.Char            (alphaNumChar, char)
@@ -25,6 +27,7 @@ import Dhall.Kubernetes.Data           (patchCyclicImports)
 import Dhall.Kubernetes.Types
     ( DuplicateHandler
     , ModelName (..)
+    , ModelPath
     , Prefix
     , Swagger (..)
     )
@@ -55,6 +58,7 @@ import qualified Text.Megaparsec.Char.Lexer            as Megaparsec.Lexer
 data Options = Options
     { skipDuplicates :: Bool
     , prefixMap :: Data.Map.Map Prefix Dhall.Import
+    , splits :: Data.Map.Map ModelPath (Maybe ModelName)
     , filename :: String
     , crd :: Bool
     }
@@ -177,8 +181,23 @@ parsePrefixMap =
       return (pack prefix, imp)
     result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
 
+parseSplits :: Options.Applicative.ReadM (Data.Map.Map ModelPath (Maybe ModelName))
+parseSplits =
+  Options.Applicative.eitherReader $ \s ->
+    bimap errorBundlePretty Data.Map.fromList $ result (pack s)
+  where
+    parser = do
+      path <- some (alphaNumChar <|> char '.' <|> char '-' <|> char '~')
+      model <- optional . try $ do
+        char '='
+        mo <- some (alphaNumChar <|> char '.' <|> char '-')
+        return (ModelName $ pack mo)
+      return (pack path, model)
+    result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
+
+
 parseOptions :: Options.Applicative.Parser Options
-parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> fileArg <*> crdArg
+parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> parseSplits' <*> fileArg <*> crdArg
   where
     parseSkip =
       Options.Applicative.switch
@@ -190,6 +209,16 @@ parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> fileArg <*> crdArg
         (  Options.Applicative.long "prefixMap"
         <> Options.Applicative.help "Specify prefix mappings as 'prefix1=importBase1,prefix2=importBase2,...'"
         <> Options.Applicative.metavar "MAPPING"
+        )
+    parseSplits' =
+      option Data.Map.empty $ Options.Applicative.option parseSplits
+        (  Options.Applicative.long "splitPaths"
+        <> Options.Applicative.help
+          "Specifiy path and model name pairs with paths being delimited by '~' and pairs separated by '=' for which \ 
+          \definitions should be aritifically split with a ref: \n\
+          \'com.example.v1.Certificate~spec=com.example.v1.CertificateSpec'\n\
+          \When the model name is omitted, a guess will be made based on the first word of the definition's description"
+        <> Options.Applicative.metavar "SPLITS"
         )
     fileArg = Options.Applicative.strArgument
             (  Options.Applicative.help "The input file to read"
@@ -243,7 +272,7 @@ main = do
   let fix m = Data.Map.adjust patchCyclicImports (ModelName m)
 
   -- Convert to Dhall types in a Map
-  let types = Convert.toTypes prefixMap
+  let types = Convert.toTypes prefixMap (Convert.pathSplitter splits)
         -- TODO: find a better way to deal with this cyclic import
          $ fix "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaProps"
          $ fix "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"

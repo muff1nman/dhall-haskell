@@ -21,6 +21,9 @@ type DuplicateHandler = (Text, [ModelName]) -> Maybe ModelName
 
 type Prefix = Text
 
+type ModelHierarchy = [ModelName]
+type ModelPath = Text
+
 {-| Type for the Swagger specification.
 
 There is such a type defined in the `swagger2` package, but Kubernetes' OpenAPI
@@ -45,7 +48,7 @@ data Definition = Definition
   , required    :: Maybe (Set FieldName)
   , baseData    :: Maybe BaseData
   , intOrString :: Maybe Bool
-  } deriving (Generic, Show)
+  } deriving (Generic, Show, Eq)
 
 instance FromJSON Definition where
   parseJSON = withObject "definition" $ \o -> do
@@ -62,12 +65,11 @@ instance FromJSON Definition where
 
 
 newtype Ref = Ref { unRef :: Text }
-  deriving (Generic, Show, FromJSON)
+  deriving (Generic, Show, FromJSON, Eq)
 
 
 newtype ModelName = ModelName { unModelName :: Text }
   deriving (Generic, Show, Ord, FromJSONKey, Eq, Pretty)
-
 
 newtype FieldName = FieldName { unFieldName :: Text }
   deriving (Generic, Show, FromJSON, FromJSONKey, Ord, Eq, Pretty)
@@ -90,7 +92,7 @@ For example for a v1 Deployment we have
 data BaseData = BaseData
   { kind       :: Text
   , apiVersion :: Text
-  } deriving (Generic, Show)
+  } deriving (Generic, Show, Eq)
 
 instance FromJSON BaseData where
   parseJSON = withArray "array of values" $ \arr -> withObject "baseData" (\o -> do

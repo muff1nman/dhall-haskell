@@ -56,14 +56,14 @@ import qualified Text.Megaparsec.Char.Lexer            as Megaparsec.Lexer
 
 -- | Top-level program options
 data Options = Options
-    { skipDuplicates :: Bool
+    { duplicates :: Duplicates
     , prefixMap :: Data.Map.Map Prefix Dhall.Import
     , splits :: Data.Map.Map ModelPath (Maybe ModelName)
     , filename :: String
     , crd :: Bool
     }
 
-data Duplicates = Skip | 
+data Duplicates = Skip | PreferHeuristic deriving (Eq, Show, Read, Bounded, Enum)
 
 -- | Write and format a Dhall expression to a file
 writeDhall :: FilePath -> Types.Expr -> IO ()
@@ -170,6 +170,10 @@ preferStableResource (_, names) = do
 skipDuplicatesHandler :: DuplicateHandler
 skipDuplicatesHandler = const Nothing
 
+getDuplicatesHandler :: Duplicates -> DuplicateHandler
+getDuplicatesHandler Skip = skipDuplicatesHandler
+getDuplicatesHandler PreferHeuristic = preferStableResource
+
 parseImport :: String -> Types.Expr -> Dhall.Parser.Parser Dhall.Import
 parseImport _ (Dhall.Note _ (Dhall.Embed l)) = pure l
 parseImport prefix e = fail $ "Expected a Dhall import for " <> prefix <> " not:\n" <> show e
@@ -201,16 +205,23 @@ parseSplits =
       return (pack path, model)
     result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
 
-parseDuplicates :: Options.Applicative.ReadM
-
+parseDuplicates :: Options.Applicative.ReadM Duplicates
+parseDuplicates = Options.Applicative.str >>= \s -> case s of
+  "skip" -> return Skip
+  "prefer" -> return PreferHeuristic
+  _ -> Options.Applicative.readerError "Accepted duplicates options are 'skip', and 'prefer'"
 
 parseOptions :: Options.Applicative.Parser Options
 parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> parseSplits' <*> fileArg <*> crdArg
   where
     parseSkip =
-      Options.Applicative.switch
-        (  Options.Applicative.long "skipDuplicates"
-        <> Options.Applicative.help "Skip types with the same name when aggregating types"
+      option PreferHeuristic $ Options.Applicative.option parseDuplicates
+        (  Options.Applicative.long "duplicates"
+        <> Options.Applicative.help
+           "Specify how to handle duplicates of a given model name with multiple versions and groups\n\
+           \\n\
+           \prefer (Default): prefer types according to a heuristic (stable over beta/alpha, native over CRDs)\
+           \skip: Skip types with the same name when aggregating types"
         )
     parsePrefixMap' =
       option Data.Map.empty $ Options.Applicative.option parsePrefixMap
@@ -252,11 +263,6 @@ main = do
   GHC.IO.Encoding.setLocaleEncoding System.IO.utf8
 
   Options{..} <- Options.Applicative.execParser parserInfoOptions
-
-  let duplicateHandler =
-        if skipDuplicates
-        then skipDuplicatesHandler
-        else preferStableResource
 
   -- Get the Definitions
   defs <-
@@ -329,6 +335,8 @@ main = do
   for_ (Data.Map.toList schemas) $ \(ModelName name, expr) -> do
     let path = "./schemas" </> unpack name <> ".dhall"
     writeDhall path expr
+
+  let duplicateHandler = getDuplicatesHandler duplicates
 
   -- Output the types record, the defaults record, and the giant union type
   let getImportsMap = Convert.getImportsMap prefixMap duplicateHandler objectNames

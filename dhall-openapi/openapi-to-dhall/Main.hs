@@ -63,6 +63,8 @@ data Options = Options
     , crd :: Bool
     }
 
+data Duplicates = Skip | 
+
 -- | Write and format a Dhall expression to a file
 writeDhall :: FilePath -> Types.Expr -> IO ()
 writeDhall path expr = do
@@ -198,6 +200,8 @@ parseSplits =
         return (ModelName $ pack mo)
       return (pack path, model)
     result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
+
+parseDuplicates :: Options.Applicative.ReadM
 
 
 parseOptions :: Options.Applicative.Parser Options

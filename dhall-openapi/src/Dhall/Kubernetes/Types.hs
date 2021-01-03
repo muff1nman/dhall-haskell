@@ -21,6 +21,9 @@ type DuplicateHandler = (Text, [ModelName]) -> Maybe ModelName
 
 type Prefix = Text
 
+type ModelHierarchy = [ModelName]
+type ModelPath = Text
+
 {-| Type for the Swagger specification.
 
 There is such a type defined in the `swagger2` package, but Kubernetes' OpenAPI
@@ -67,9 +70,6 @@ newtype Ref = Ref { unRef :: Text }
 
 newtype ModelName = ModelName { unModelName :: Text }
   deriving (Generic, Show, Ord, FromJSONKey, Eq, Pretty)
-
-type ModelHierarchy = [ModelName]
-type ModelPath = Text
 
 newtype FieldName = FieldName { unFieldName :: Text }
   deriving (Generic, Show, FromJSON, FromJSONKey, Ord, Eq, Pretty)

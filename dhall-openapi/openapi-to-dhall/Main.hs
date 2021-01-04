@@ -63,7 +63,8 @@ data Options = Options
     , crd :: Bool
     }
 
-data Duplicates = Skip | PreferHeuristic deriving (Eq, Show, Read, Bounded, Enum)
+data Duplicates = Skip | PreferHeuristic | Full
+  deriving (Eq, Show, Read, Bounded, Enum)
 
 -- | Write and format a Dhall expression to a file
 writeDhall :: FilePath -> Types.Expr -> IO ()
@@ -209,7 +210,8 @@ parseDuplicates :: Options.Applicative.ReadM Duplicates
 parseDuplicates = Options.Applicative.str >>= \s -> case s of
   "skip" -> return Skip
   "prefer" -> return PreferHeuristic
-  _ -> Options.Applicative.readerError "Accepted duplicates options are 'skip', and 'prefer'"
+  "full" -> return Full
+  _ -> Options.Applicative.readerError "Accepted duplicates options are 'skip', 'prefer' and 'full'"
 
 parseOptions :: Options.Applicative.Parser Options
 parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> parseSplits' <*> fileArg <*> crdArg
@@ -218,10 +220,10 @@ parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> parseSplits' <*> fi
       option PreferHeuristic $ Options.Applicative.option parseDuplicates
         (  Options.Applicative.long "duplicates"
         <> Options.Applicative.help
-           "Specify how to handle duplicates of a given model name with multiple versions and groups\n\
-           \\n\
-           \prefer (Default): prefer types according to a heuristic (stable over beta/alpha, native over CRDs)\
-           \skip: Skip types with the same name when aggregating types"
+           "Specify how to handle duplicates of a given model name with multiple versions and groups. \
+           \prefer: (Default) Prefer types according to a heuristic i.e. stable over beta/alpha, native over CRDs. \
+           \skip: Skip types with the same name when aggregating types. \
+           \full: Use nesting or fully qualified names to disambiguate between model names with multiple versions and groups."
         )
     parsePrefixMap' =
       option Data.Map.empty $ Options.Applicative.option parsePrefixMap
@@ -336,24 +338,31 @@ main = do
     let path = "./schemas" </> unpack name <> ".dhall"
     writeDhall path expr
 
-  let duplicateHandler = getDuplicatesHandler duplicates
+  let
+    typesRecordPath = "./types.dhall"
+    typesUnionPath = "./typesUnion.dhall"
+    defaultsRecordPath = "./defaults.dhall"
+    schemasRecordPath = "./schemas.dhall"
+    packageRecordPath = "./package.dhall"
 
-  -- Output the types record, the defaults record, and the giant union type
-  let getImportsMap = Convert.getImportsMap prefixMap duplicateHandler objectNames
-      makeRecordMap = Dhall.Map.mapMaybe (Just . Dhall.makeRecordField)
-      objectNames = Data.Map.keys types
-      typesMap = getImportsMap "types" $ Data.Map.keys types
-      defaultsMap = getImportsMap "defaults" $ Data.Map.keys defaults
-      schemasMap = getImportsMap "schemas" $ Data.Map.keys schemas
+  if duplicates == Full
+  then do
+    let
+        typesMap = getImportsMap "types" $ Data.Map.keys types
+    return ()
+  else do
+    let duplicateHandler = getDuplicatesHandler duplicates
 
-      typesRecordPath = "./types.dhall"
-      typesUnionPath = "./typesUnion.dhall"
-      defaultsRecordPath = "./defaults.dhall"
-      schemasRecordPath = "./schemas.dhall"
-      packageRecordPath = "./package.dhall"
+    -- Output the types record, the defaults record, and the giant union type
+    let getImportsMap = Convert.getImportsMap prefixMap duplicateHandler objectNames
+        makeRecordMap = Dhall.Map.mapMaybe (Just . Dhall.makeRecordField)
+        objectNames = Data.Map.keys types
+        typesMap = getImportsMap "types" $ Data.Map.keys types
+        defaultsMap = getImportsMap "defaults" $ Data.Map.keys defaults
+        schemasMap = getImportsMap "schemas" $ Data.Map.keys schemas
 
-  writeDhall typesUnionPath (Dhall.Union $ fmap Just typesMap)
-  writeDhall typesRecordPath (Dhall.RecordLit $ makeRecordMap typesMap)
-  writeDhall defaultsRecordPath (Dhall.RecordLit $ makeRecordMap defaultsMap)
-  writeDhall schemasRecordPath (Dhall.RecordLit $ makeRecordMap schemasMap)
-  writeDhall packageRecordPath package
+    writeDhall typesUnionPath (Dhall.Union $ fmap Just typesMap)
+    writeDhall typesRecordPath (Dhall.RecordLit $ makeRecordMap typesMap)
+    writeDhall defaultsRecordPath (Dhall.RecordLit $ makeRecordMap defaultsMap)
+    writeDhall schemasRecordPath (Dhall.RecordLit $ makeRecordMap schemasMap)
+    writeDhall packageRecordPath package

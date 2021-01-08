@@ -114,10 +114,10 @@ toTextLit :: Text -> Expr
 toTextLit str = Dhall.TextLit (Dhall.Chunks [] str)
 
 -- | Merge maps and error on conflicts
-mergeNoConflicts :: (Ord k, Eq a, Show a, Show k) => Data.Map.Map k a -> Data.Map.Map k a -> Data.Map.Map k a
-mergeNoConflicts = Data.Map.unionWithKey
+mergeNoConflicts :: (Ord k, Eq a, Show a, Show k) => (a -> a -> Bool) -> Data.Map.Map k a -> Data.Map.Map k a -> Data.Map.Map k a
+mergeNoConflicts canMerge = Data.Map.unionWithKey
                    (\key left right ->
-                     if   left == right 
+                     if   canMerge left right
                      then left 
                      else error ("Cannot merge differing values " ++ show left ++ " and " ++ show right ++ " for key " ++ show key))
 
@@ -167,11 +167,16 @@ toTypes prefixMap typeSplitter definitions = toTypes' prefixMap typeSplitter def
 toTypes' :: Data.Map.Map Prefix Dhall.Import -> ([ModelName] -> Definition -> Maybe ModelName) -> Data.Map.Map ModelName Definition -> Data.Map.Map ModelName Expr -> Data.Map.Map ModelName Expr
 toTypes' prefixMap typeSplitter definitions toMerge
   | Data.Map.null definitions = toMerge
-  | otherwise = mergeNoConflicts (toTypes' prefixMap typeSplitter newDefs modelMap) toMerge
+  | otherwise = mergeNoConflicts (==) (toTypes' prefixMap typeSplitter newDefs modelMap) toMerge
      where
 
+        -- some CRDs are equal all except for the top description. This is safe as the only usage of description
+        -- is 'guessModelNameForSplit' which has already been called for the top definition
+        equalsIgnoringDescription :: Definition -> Definition -> Bool
+        equalsIgnoringDescription a b = a { description = description b } == b
+
         convertAndAccumWithKey :: ModelHierarchy -> Data.Map.Map ModelName Definition -> ModelName -> Definition -> (Data.Map.Map ModelName Definition, Expr)
-        convertAndAccumWithKey modelHierarchy accDefs k v = (mergeNoConflicts accDefs leftOverDefs, expr)
+        convertAndAccumWithKey modelHierarchy accDefs k v = (mergeNoConflicts equalsIgnoringDescription accDefs leftOverDefs, expr)
           where
              (expr, leftOverDefs) = convertToType (modelHierarchy ++ [k]) v
 

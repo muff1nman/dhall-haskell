@@ -36,10 +36,6 @@ import qualified Dhall.Optics
 modelsToText :: ModelHierarchy -> [Text]
 modelsToText = List.map (\ (ModelName unModelName) -> unModelName)
 
--- | Creates a path of a given hierarchy of models (separated by @~@) that can be used for textual matching
-modelsToPath :: ModelHierarchy -> ModelPath
-modelsToPath = Text.intercalate "~" . modelsToText
-
 -- | Get all the required fields for a model
 --   See https://kubernetes.io/docs/concepts/overview/working-with-objects/kubernetes-objects/#required-fields
 --   TLDR: because k8s API allows PUTS etc with partial data,
@@ -51,10 +47,9 @@ requiredFields modelHierarchy required
       (List.foldr Set.union (fromMaybe Set.empty required) [alwaysRequired, toAdd])
       toRemove
   where
-    hierarchyAsText = modelsToPath modelHierarchy
     alwaysRequired = Set.fromList $ FieldName <$> [ "apiVersion", "kind", "metadata"]
-    toAdd = fromMaybe Set.empty $ Data.Map.lookup hierarchyAsText requiredConstraints
-    toRemove = fromMaybe Set.empty $ Data.Map.lookup hierarchyAsText notRequiredConstraints
+    toAdd = fromMaybe Set.empty $ Data.Map.lookup modelHierarchy requiredConstraints
+    toRemove = fromMaybe Set.empty $ Data.Map.lookup modelHierarchy notRequiredConstraints
 
     -- | Some models require keys that are not in the required set,
     --   but are in the docs or just work
@@ -63,22 +58,22 @@ requiredFields modelHierarchy required
     -- | Some models should not require some keys, and this is not
     --   in the Swagger spec but just in the docs
     notRequiredConstraints = Data.Map.fromList
-      [ ( "io.k8s.api.core.v1.ObjectFieldSelector"
+      [ ( [ModelName "io.k8s.api.core.v1.ObjectFieldSelector"]
         , Set.fromList [ FieldName "apiVersion" ]
         )
-      , ( "io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails"
+      , ( [ModelName "io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails"]
         , Set.fromList [ FieldName "kind" ]
         )
-      , ( "io.k8s.api.core.v1.PersistentVolumeClaim"
+      , ( [ModelName "io.k8s.api.core.v1.PersistentVolumeClaim"]
         , Set.fromList [ FieldName "apiVersion", FieldName "kind" ]
         )
-      , ( ModelName "io.k8s.api.batch.v1beta1.JobTemplateSpec"
+      , ( [ModelName "io.k8s.api.batch.v1beta1.JobTemplateSpec"]
         , Set.fromList [ FieldName "metadata" ]
         )
-      , ( ModelName "io.k8s.api.batch.v2alpha1.JobTemplateSpec"
+      , ( [ModelName "io.k8s.api.batch.v2alpha1.JobTemplateSpec"]
         , Set.fromList [ FieldName "metadata" ]
         )
-      , ( ModelName "io.k8s.api.core.v1.PodTemplateSpec"
+      , ( [ModelName "io.k8s.api.core.v1.PodTemplateSpec"]
         , Set.fromList [ FieldName "metadata" ]
         )
       ]
@@ -150,13 +145,12 @@ guessModelNameForSplit models definition = ModelName <$> ((<>) <$> toPrepend <*>
    Currently not all split points in for nested definitions are supported (in fact only types with a properties
    attribute are currently supported).
 -}
-pathSplitter :: Data.Map.Map ModelPath (Maybe ModelName) -> ModelHierarchy -> Definition -> Maybe ModelName
+pathSplitter :: Data.Map.Map ModelHierarchy (Maybe ModelName) -> ModelHierarchy -> Definition -> Maybe ModelName
 pathSplitter pathsAndModels modelHierarchy definition
   | (Maybe.isJust $ properties definition) && Maybe.isJust model = model
   | otherwise = Nothing
   where
-    hierarchyAsText = modelsToPath modelHierarchy
-    model = case Data.Map.lookup hierarchyAsText pathsAndModels of
+    model = case Data.Map.lookup modelHierarchy pathsAndModels of
       Just (Just m) -> Just m
       Just (Nothing) -> guessModelNameForSplit modelHierarchy definition
       Nothing -> Nothing

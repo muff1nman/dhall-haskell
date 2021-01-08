@@ -17,9 +17,9 @@ import Text.Megaparsec
     , errorBundlePretty
     , parse
     , some
-    , try
     , optional
     , (<|>)
+    , eof
     )
 import Text.Megaparsec.Char            (alphaNumChar, char)
 
@@ -27,7 +27,7 @@ import Dhall.Kubernetes.Data           (patchCyclicImports)
 import Dhall.Kubernetes.Types
     ( DuplicateHandler
     , ModelName (..)
-    , ModelPath
+    , ModelHierarchy
     , Prefix
     , Swagger (..)
     )
@@ -58,7 +58,7 @@ import qualified Text.Megaparsec.Char.Lexer            as Megaparsec.Lexer
 data Options = Options
     { skipDuplicates :: Bool
     , prefixMap :: Data.Map.Map Prefix Dhall.Import
-    , splits :: Data.Map.Map ModelPath (Maybe ModelName)
+    , splits :: Data.Map.Map ModelHierarchy (Maybe ModelName)
     , filename :: String
     , crd :: Bool
     }
@@ -183,21 +183,23 @@ parsePrefixMap =
       e <- Dhall.Parser.expr
       imp <- parseImport prefix e
       return (pack prefix, imp)
-    result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
+    result = parse ((Dhall.Parser.unParser parser `sepBy1` char ',') <* eof) "MAPPING"
 
-parseSplits :: Options.Applicative.ReadM (Data.Map.Map ModelPath (Maybe ModelName))
+parseSplits :: Options.Applicative.ReadM (Data.Map.Map ModelHierarchy (Maybe ModelName))
 parseSplits =
   Options.Applicative.eitherReader $ \s ->
     bimap errorBundlePretty Data.Map.fromList $ result (pack s)
   where
+    parseModelInner = some (alphaNumChar <|> char '-' <|> char '.')
+    parseModel = (ModelName . pack) <$> (((char '(') *> parseModelInner <* (char ')')) <|> parseModelInner)
     parser = do
-      path <- some (alphaNumChar <|> char '.' <|> char '-' <|> char '~')
-      model <- optional . try $ do
+      path <- parseModel `sepBy1` char '.'
+      model <- optional $ do
         char '='
-        mo <- some (alphaNumChar <|> char '.' <|> char '-')
-        return (ModelName $ pack mo)
-      return (pack path, model)
-    result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
+        mo <- parseModel
+        return mo
+      return (path, model)
+    result = parse ((Dhall.Parser.unParser parser `sepBy1` char ',') <* eof) "MAPPING"
 
 
 parseOptions :: Options.Applicative.Parser Options
@@ -218,10 +220,11 @@ parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> parseSplits' <*> fi
       option Data.Map.empty $ Options.Applicative.option parseSplits
         (  Options.Applicative.long "splitPaths"
         <> Options.Applicative.help
-          "Specifiy path and model name pairs with paths being delimited by '~' and pairs separated by '=' for which \ 
+          "Specifiy path and model name pairs with paths being delimited by '.' and pairs separated by '=' for which \
           \definitions should be aritifically split with a ref: \n\
-          \'com.example.v1.Certificate~spec=com.example.v1.CertificateSpec'\n\
-          \When the model name is omitted, a guess will be made based on the first word of the definition's description"
+          \'(com.example.v1.Certificate).spec=com.example.v1.CertificateSpec'\n\
+          \When the model name is omitted, a guess will be made based on the first word of the definition's \
+          \description. Also note that top level model names in a path must use () when the name contains '.'"
         <> Options.Applicative.metavar "SPLITS"
         )
     fileArg = Options.Applicative.strArgument

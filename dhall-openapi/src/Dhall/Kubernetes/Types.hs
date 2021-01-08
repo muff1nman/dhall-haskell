@@ -22,7 +22,6 @@ type DuplicateHandler = (Text, [ModelName]) -> Maybe ModelName
 type Prefix = Text
 
 type ModelHierarchy = [ModelName]
-type ModelPath = Text
 
 {-| Type for the Swagger specification.
 

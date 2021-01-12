@@ -25,6 +25,7 @@ import Text.Megaparsec.Char            (alphaNumChar, char)
 import Dhall.Kubernetes.Data           (patchCyclicImports)
 import Dhall.Kubernetes.Types
     ( DuplicateHandler
+    , AliasConverter
     , ModelName (..)
     , Prefix
     , Swagger (..)
@@ -54,11 +55,14 @@ import qualified Text.Megaparsec.Char.Lexer            as Megaparsec.Lexer
 
 -- | Top-level program options
 data Options = Options
-    { skipDuplicates :: Bool
+    { duplicates :: Duplicates
     , prefixMap :: Data.Map.Map Prefix Dhall.Import
     , filename :: String
     , crd :: Bool
     }
+
+data Duplicates = Skip | PreferHeuristic | Full | FullNested
+  deriving (Eq, Show, Read, Bounded, Enum)
 
 -- | Write and format a Dhall expression to a file
 writeDhall :: FilePath -> Types.Expr -> IO ()
@@ -165,6 +169,32 @@ preferStableResource (names) = do
 skipDuplicatesHandler :: DuplicateHandler
 skipDuplicatesHandler = const Nothing
 
+errorDuplicatesHandler :: DuplicateHandler
+errorDuplicatesHandler models = error $ "Found conflicting model names: " ++ (List.intercalate ", " $ fmap show models)
+
+getDuplicatesHandler :: Duplicates -> DuplicateHandler
+getDuplicatesHandler Skip = skipDuplicatesHandler
+getDuplicatesHandler PreferHeuristic = preferStableResource
+getDuplicatesHandler _ = errorDuplicatesHandler
+
+getAliasConverter :: Duplicates -> AliasConverter
+getAliasConverter Full = toFullModelName
+getAliasConverter FullNested = toFullModelName
+getAliasConverter _ = toSimpleModelName
+
+toSimpleModelName :: AliasConverter
+toSimpleModelName (ModelName name) =
+  let elems = Text.split (== '.') name
+  in elems List.!! (length elems - 1)
+
+toFullModelName :: AliasConverter
+toFullModelName m
+  | useShortName = toSimpleModelName m
+  | otherwise = unModelName m
+  where
+    nonPrefixed = [ModelName "io.k8s.apimachinery.pkg.util.intstr.IntOrString"] :: [ModelName]
+    useShortName = m `elem` nonPrefixed
+
 parseImport :: String -> Types.Expr -> Dhall.Parser.Parser Dhall.Import
 parseImport _ (Dhall.Note _ (Dhall.Embed l)) = pure l
 parseImport prefix e = fail $ "Expected a Dhall import for " <> prefix <> " not:\n" <> show e
@@ -182,13 +212,28 @@ parsePrefixMap =
       return (pack prefix, imp)
     result = parse (Dhall.Parser.unParser parser `sepBy1` char ',') "MAPPING"
 
+parseDuplicates :: Options.Applicative.ReadM Duplicates
+parseDuplicates = Options.Applicative.str >>= toDuplicates
+  where
+    toDuplicates :: String -> Options.Applicative.ReadM Duplicates
+    toDuplicates "skip" = return Skip
+    toDuplicates "prefer" = return PreferHeuristic
+    toDuplicates "full" = return Full
+    toDuplicates "nested" = return FullNested
+    toDuplicates _ = Options.Applicative.readerError "Accepted duplicates options are 'skip', 'prefer', 'full' and 'nested'"
+
 parseOptions :: Options.Applicative.Parser Options
 parseOptions = Options <$> parseSkip <*> parsePrefixMap' <*> fileArg <*> crdArg
   where
     parseSkip =
-      Options.Applicative.switch
-        (  Options.Applicative.long "skipDuplicates"
-        <> Options.Applicative.help "Skip types with the same name when aggregating types"
+      option PreferHeuristic $ Options.Applicative.option parseDuplicates
+        (  Options.Applicative.long "duplicates"
+        <> Options.Applicative.help
+           "Specify how to handle duplicates of a given model name with multiple versions and groups. \
+           \prefer: (Default) Prefer types according to a heuristic i.e. stable over beta/alpha, native over CRDs. \
+           \skip: Skip types with the same name when aggregating types. \
+           \full: Use fully qualified names to disambiguate between model names with multiple versions and groups. \
+           \nested: Similar to full but instead nests by any occurances of the '.' character."
         )
     parsePrefixMap' =
       option Data.Map.empty $ Options.Applicative.option parsePrefixMap
@@ -220,11 +265,6 @@ main = do
   GHC.IO.Encoding.setLocaleEncoding System.IO.utf8
 
   Options{..} <- Options.Applicative.execParser parserInfoOptions
-
-  let duplicateHandler =
-        if skipDuplicates
-        then skipDuplicatesHandler
-        else preferStableResource
 
   -- Get the Definitions
   defs <-
@@ -299,16 +339,9 @@ main = do
     let path = "./schemas" </> unpack name <> ".dhall"
     writeDhall path expr
 
-  let isStandalone model = and $ (\ def -> isJust $ Types.baseData def) <$> Data.Map.lookup model defs
-
-  let makeRecord = Dhall.RecordLit . fmap Dhall.makeRecordField
-      typesMap = Dhall.Map.fromList $ List.sortOn snd $ Data.Map.toList $ Convert.groupBySimpleModelName duplicateHandler $ Data.Map.keys types
-      defaultsMap = Dhall.Map.filter (`elem` (Data.Map.keys defaults)) typesMap
-      schemasMap = Dhall.Map.filter (`elem` (Data.Map.keys schemas)) typesMap
-      typesRecord = makeRecord $ fmap (mkImportWithModel ["types"]) typesMap
-      typesUnion = Dhall.Union $ fmap (Just . mkImportWithModel ["types"]) $ Dhall.Map.filter isStandalone typesMap
-      defaultsRecord = makeRecord $ fmap (mkImportWithModel ["defaults"]) defaultsMap
-      schemasRecord = makeRecord $ fmap (mkImportWithModel ["schemas"]) schemasMap
+  let duplicateHandler = getDuplicatesHandler duplicates
+      aliasConverter = getAliasConverter duplicates
+      isStandalone model = and $ (\ def -> isJust $ Types.baseData def) <$> Data.Map.lookup model defs
 
   let typesRecordPath = "./types.dhall"
       typesUnionPath = "./typesUnion.dhall"
@@ -316,8 +349,49 @@ main = do
       schemasRecordPath = "./schemas.dhall"
       packageRecordPath = "./package.dhall"
 
-  writeDhall typesUnionPath typesUnion
-  writeDhall typesRecordPath typesRecord
-  writeDhall defaultsRecordPath defaultsRecord
-  writeDhall schemasRecordPath schemasRecord
-  writeDhall packageRecordPath package
+  if duplicates == FullNested
+  then do
+    let
+        makeRecord = Convert.groupByOnParts duplicateHandler aliasConverter
+        typesRecord = makeRecord
+                    $ Data.Map.mapWithKey (\k _ -> mkImportWithModel ["types"] k) types
+        defaultsRecord = makeRecord
+                       $ Data.Map.mapWithKey (\k _ -> mkImportWithModel ["defaults"] k)
+                       $ Data.Map.restrictKeys types (Data.Map.keysSet defaults)
+        schemasRecord = makeRecord
+                      $ Data.Map.mapWithKey (\k _ -> mkImportWithModel ["schemas"] k)
+                      $ Data.Map.restrictKeys types (Data.Map.keysSet schemas)
+        typesUnionMap = Dhall.Map.fromList
+                      $ List.sortOn snd
+                      $ Data.Map.toList
+                      $ Convert.groupBy duplicateHandler aliasConverter
+                      $ Data.Map.keys types
+        typesUnion = Dhall.Union
+                   $ fmap (Just . mkImportWithModel ["types"])
+                   $ Dhall.Map.filter isStandalone typesUnionMap
+
+    writeDhall typesUnionPath typesUnion
+    writeDhall typesRecordPath typesRecord
+    writeDhall defaultsRecordPath defaultsRecord
+    writeDhall schemasRecordPath schemasRecord
+    writeDhall packageRecordPath package
+  else do
+
+    let makeRecord = Dhall.RecordLit . fmap Dhall.makeRecordField
+        typesMap = Dhall.Map.fromList
+                 $ List.sortOn snd
+                 $ Data.Map.toList
+                 $ Convert.groupBy duplicateHandler aliasConverter
+                 $ Data.Map.keys types
+        defaultsMap = Dhall.Map.filter (`elem` (Data.Map.keys defaults)) typesMap
+        schemasMap = Dhall.Map.filter (`elem` (Data.Map.keys schemas)) typesMap
+        typesRecord = makeRecord $ fmap (mkImportWithModel ["types"]) typesMap
+        typesUnion = Dhall.Union $ fmap (Just . mkImportWithModel ["types"]) $ Dhall.Map.filter isStandalone typesMap
+        defaultsRecord = makeRecord $ fmap (mkImportWithModel ["defaults"]) defaultsMap
+        schemasRecord = makeRecord $ fmap (mkImportWithModel ["schemas"]) schemasMap
+
+    writeDhall typesUnionPath typesUnion
+    writeDhall typesRecordPath typesRecord
+    writeDhall defaultsRecordPath defaultsRecord
+    writeDhall schemasRecordPath schemasRecord
+    writeDhall packageRecordPath package

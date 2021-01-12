@@ -18,10 +18,11 @@ import           GHC.Generics              (Generic)
 type Expr = Dhall.Expr Dhall.Src Dhall.Import
 
 type DuplicateHandler = [ModelName] -> Maybe ModelName
+type AliasConverter = ModelName -> AliasedModelName
 
 type Prefix = Text
 
-type SimpleModelName = Text
+type AliasedModelName = Text
 
 {-| Type for the Swagger specification.
 

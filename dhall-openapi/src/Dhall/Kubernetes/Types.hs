@@ -17,7 +17,7 @@ import           GHC.Generics              (Generic)
 
 type Expr = Dhall.Expr Dhall.Src Dhall.Import
 
-type DuplicateHandler = (SimpleModelName, [ModelName]) -> Maybe ModelName
+type DuplicateHandler = [ModelName] -> Maybe ModelName
 
 type Prefix = Text
 
